@@ -176,54 +176,38 @@ def get_ready_jobs():
 
 def get_job():
     engine = get_db(DBType.SQLite, "sqlite:///data.db")
-    side_events = (
-        Events.select()
-        .where(and_(Events.c.SET_ID == -1, Events.c.STATUS == 1))
-        .subquery("SIDE_EVENTS")
-    )
-    number_of_jobs = (
-        select(Events.c.CATEGORY_ID, func.count().label("NUMBER_OF_RUNNING_JOBS"))
-        .where(Events.c.STATUS == 1)
-        .group_by(Events.c.CATEGORY_ID)
-        .subquery("number_of_jobs")
-    )
     query = (
-        select(
-            Events.c.ID,
-            Events.c.CATEGORY_ID,
-            Events.c.SET_ID,
-            Events.c.STATUS,
-            side_events.c.ID.label("CROSS_CATEGORY_ID"),
-            number_of_jobs.c.NUMBER_OF_RUNNING_JOBS.label("NUMBER_OF_RUNNING_JOBS"),
+        ready_jobs_query()
+        .where(
+            and_(
+                Events.c.STATUS == 0,
+                or_(
+                    and_(
+                        Events.c.SET_ID != -1,
+                        or_(
+                            next_category_job.c.NEXT_CATEGORY_JOB_ID.is_(None),
+                            next_category_job.c.NEXT_CATEGORY_JOB_ID >= Events.c.ID,
+                        ),
+                    ),
+                    and_(
+                        Events.c.SET_ID == -1,
+                        or_(
+                            number_of_jobs.c.NUMBER_OF_RUNNING_JOBS.is_(None),
+                            number_of_jobs.c.NUMBER_OF_RUNNING_JOBS == 0,
+                        ),
+                    ),
+                ),
+            )
         )
-        .join(
-            side_events, Events.c.CATEGORY_ID == side_events.c.CATEGORY_ID, isouter=True
-        )
-        .join(
-            number_of_jobs,
-            Events.c.CATEGORY_ID == number_of_jobs.c.CATEGORY_ID,
-            isouter=True,
-        )
-        .where(and_(Events.c.STATUS == 0, side_events.c.ID.is_(None)))
-        .with_for_update()
+        .limit(1)
     )
-
     with engine.begin() as connention:
-        while True:
-            result = connention.execute(query).first()
-            if not result:
-                return
-            if (
-                result.SET_ID == -1
-                and result.NUMBER_OF_RUNNING_JOBS
-                and result.NUMBER_OF_RUNNING_JOBS > 0
-            ):
-                query = query.where(Events.c.CATEGORY_ID != result.CATEGORY_ID)
-                continue
-            break
-        connention.execute(
-            Events.update().where(Events.c.ID == result.ID).values({"STATUS": 1})
-        )
+        result = connention.execute(
+            Events.update()
+            .where(Events.c.ID == query.c.ID)
+            .values({"STATUS": 1})
+            .returning(Events.c.ID, Events.c.CATEGORY_ID, Events.c.SET_ID)
+        ).all()
     print_table(result)
 
 
